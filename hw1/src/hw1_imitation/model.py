@@ -6,6 +6,7 @@ import abc
 from typing import Literal, TypeAlias
 
 import torch
+from einops import rearrange
 from torch import nn
 
 
@@ -47,12 +48,33 @@ class MSEPolicy(BasePolicy):
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
 
+        self.chunk_size = chunk_size
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+        in_dim = state_dim
+        out_dim = action_dim * chunk_size
+
+        layers = []
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        pred_action_chunk = rearrange(
+            self.mlp(state),
+            "batch (chunk action) -> batch chunk action",
+            chunk=self.chunk_size,
+        )
+        loss = torch.mean((pred_action_chunk - action_chunk) ** 2)
+        return loss
 
     def sample_actions(
         self,
@@ -60,7 +82,13 @@ class MSEPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        with torch.no_grad():
+            pred_action_chunk = rearrange(
+                self.mlp(state),
+                "batch (chunk action) -> batch chunk action",
+                chunk=self.chunk_size,
+            )
+        return pred_action_chunk
 
 
 class FlowMatchingPolicy(BasePolicy):

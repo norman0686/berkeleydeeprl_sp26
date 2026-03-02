@@ -10,17 +10,14 @@ from typing import Any
 import numpy as np
 import torch
 import tyro
-import wandb
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from hw1_imitation.data import (
-    Normalizer,
-    PushtChunkDataset,
-    download_pusht,
-    load_pusht_zarr,
-)
-from hw1_imitation.model import build_policy, PolicyType
-from hw1_imitation.evaluation import Logger
+import wandb
+from hw1_imitation.data import (Normalizer, PushtChunkDataset, download_pusht,
+                                load_pusht_zarr)
+from hw1_imitation.evaluation import Logger, evaluate_policy
+from hw1_imitation.model import PolicyType, build_policy
 
 LOGDIR_PREFIX = "exp"
 
@@ -52,7 +49,7 @@ class TrainConfig:
     # Random seed.
     seed: int = 42
     # WandB project name.
-    wandb_project: str = "hw1-imitation"
+    wandb_project: str = "berkeley-deeprl-hw1-imitation"
     # Experiment name suffix for logging and WandB.
     exp_name: str | None = None
 
@@ -129,12 +126,47 @@ def run_training(config: TrainConfig) -> None:
 
     ### TODO: PUT YOUR MAIN TRAINING LOOP HERE ###
 
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
+    )
+
+    step = 0
+    for _ in tqdm(range(wandb.config.num_epochs), desc="Epoch"):
+        for state, action_chunk in loader:
+            state = state.to(device)
+            action_chunk = action_chunk.to(device)
+
+            loss = model.compute_loss(state, action_chunk)
+            wandb.log({"loss": loss.item()})
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
+            step += 1
+
+            if step % config.eval_interval == 0:
+                evaluate_policy(
+                    model=model,
+                    normalizer=normalizer,
+                    device=device,
+                    chunk_size=config.chunk_size,
+                    flow_num_steps=config.flow_num_steps,
+                    step=step,
+                    num_video_episodes=config.num_video_episodes,
+                    video_size=config.video_size,
+                    logger=logger)
+
     logger.dump_for_grading()
 
 
 def main() -> None:
     config = parse_train_config()
     run_training(config)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
