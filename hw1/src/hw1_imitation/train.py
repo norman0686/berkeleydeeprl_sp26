@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -14,10 +14,14 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from hw1_imitation.data import (Normalizer, PushtChunkDataset, download_pusht,
-                                load_pusht_zarr)
+from hw1_imitation.data import (
+    Normalizer,
+    PushtChunkDataset,
+    download_pusht,
+    load_pusht_zarr,
+)
 from hw1_imitation.evaluation import Logger, evaluate_policy
-from hw1_imitation.model import PolicyType, build_policy
+from hw1_imitation.model import BasePolicy, PolicyType, build_policy
 
 LOGDIR_PREFIX = "exp"
 
@@ -126,6 +130,8 @@ def run_training(config: TrainConfig) -> None:
 
     ### TODO: PUT YOUR MAIN TRAINING LOOP HERE ###
 
+    compipled_model = cast(BasePolicy, torch.compile(model))
+
     opt = torch.optim.AdamW(
         model.parameters(),
         lr=config.lr,
@@ -138,7 +144,7 @@ def run_training(config: TrainConfig) -> None:
             state = state.to(device)
             action_chunk = action_chunk.to(device)
 
-            loss = model.compute_loss(state, action_chunk)
+            loss = compipled_model.compute_loss(state, action_chunk)
             wandb.log({"loss": loss.item()})
             loss.backward()
             opt.step()
