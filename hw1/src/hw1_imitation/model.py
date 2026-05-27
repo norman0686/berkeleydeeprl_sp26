@@ -6,7 +6,7 @@ import abc
 from typing import Literal, TypeAlias
 
 import torch
-from einops import rearrange
+from einops import pack, rearrange
 from torch import nn
 
 
@@ -104,12 +104,43 @@ class FlowMatchingPolicy(BasePolicy):
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
 
+        self.chunk_size = chunk_size
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+        in_dim = state_dim + action_dim * chunk_size + 1
+        out_dim = action_dim * chunk_size
+
+        layers = []
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        batch_size = state.shape[0]
+        tau = torch.rand(batch_size, 1, 1, device=state.device, dtype=state.dtype)
+        noise = torch.randn_like(action_chunk)
+        interpolation = tau * action_chunk + (1 - tau) * noise
+        target_velocity = action_chunk - noise
+
+        model_input, _ = pack(
+            [state, interpolation, rearrange(tau, "... 1 -> ...")], "batch *"
+        )
+        model_output = self.mlp(model_input)
+        predicted_velocity = rearrange(
+            model_output,
+            "batch (chunk action) -> batch chunk action",
+            chunk=self.chunk_size,
+        )
+        loss = torch.mean((predicted_velocity - target_velocity) ** 2)
+        return loss
 
     def sample_actions(
         self,
@@ -117,7 +148,36 @@ class FlowMatchingPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        with torch.no_grad():
+            batch_size = state.shape[0]
+            action_chunk = torch.randn(
+                batch_size,
+                self.chunk_size,
+                self.action_dim,
+                device=state.device,
+                dtype=state.dtype,
+            )
+            for i in range(num_steps):
+                tau = i / num_steps
+                packed_input, _ = pack(
+                    [
+                        state,
+                        action_chunk,
+                        torch.full(
+                            (batch_size, 1), tau, device=state.device, dtype=state.dtype
+                        ),
+                    ],
+                    "batch *",
+                )
+                output = self.mlp(packed_input)
+                predicted_velocity = rearrange(
+                    output,
+                    "batch (chunk action) -> batch chunk action",
+                    chunk=self.chunk_size,
+                )
+                action_chunk = action_chunk + predicted_velocity / num_steps
+
+        return action_chunk
 
 
 PolicyType: TypeAlias = Literal["mse", "flow"]
